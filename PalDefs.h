@@ -26,8 +26,8 @@
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * Changes from Qualcomm Innovation Center are provided under the following license:
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Changes from Qualcomm Technologies, Inc. are provided under the following license:
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
@@ -57,6 +57,7 @@ extern "C" {
 #define MIXER_PATH_MAX_LENGTH 100
 #define PAL_MAX_CHANNELS_SUPPORTED 64
 #define MAX_KEYWORD_SUPPORTED 8
+#define PAL_VERSION "1.0"
 
 /** Audio stream handle */
 typedef uint64_t pal_stream_handle_t;
@@ -248,6 +249,13 @@ typedef struct pal_spkr_prot_payload {
     pal_spkr_prot_mode operationMode;/* Type of mode for which request is raised */
 } pal_spkr_prot_payload;
 
+enum {
+    SPKR_RIGHT,    /* Right Speaker */
+    SPKR_LEFT,     /* Left Speaker */
+    SPKR_TOP,      /* Top Speaker */
+    SPKR_BOTTOM,   /* Bottom Speaker */
+};
+
 typedef enum {
     GEF_PARAM_READ = 0,
     GEF_PARAM_WRITE,
@@ -398,8 +406,9 @@ typedef enum {
     PAL_DEVICE_OUT_HEARING_AID = 18,
     PAL_DEVICE_OUT_HAPTICS_DEVICE = 19,
     PAL_DEVICE_OUT_ULTRASOUND = 20,
+    PAL_DEVICE_OUT_BLUETOOTH_BLE = 21,
     // Add new OUT devices here, increment MAX and MIN below when you do so
-    PAL_DEVICE_OUT_MAX = 21,
+    PAL_DEVICE_OUT_MAX = 22,
     //INPUT DEVICES
     PAL_DEVICE_IN_MIN = PAL_DEVICE_OUT_MAX,
     PAL_DEVICE_IN_HANDSET_MIC = PAL_DEVICE_IN_MIN +1,
@@ -423,8 +432,9 @@ typedef enum {
     PAL_DEVICE_IN_ULTRASOUND_MIC = PAL_DEVICE_IN_MIN +19,
     PAL_DEVICE_IN_EXT_EC_REF = PAL_DEVICE_IN_MIN + 20,
     PAL_DEVICE_IN_ECHO_REF = PAL_DEVICE_IN_MIN + 21,
+    PAL_DEVICE_IN_BLUETOOTH_BLE = PAL_DEVICE_IN_MIN + 22,
     // Add new IN devices here, increment MAX and MIN below when you do so
-    PAL_DEVICE_IN_MAX = PAL_DEVICE_IN_MIN + 22,
+    PAL_DEVICE_IN_MAX = PAL_DEVICE_IN_MIN + 23,
 } pal_device_id_t;
 
 typedef enum {
@@ -460,6 +470,7 @@ static const std::map<std::string, pal_device_id_t> deviceIdLUT {
     {std::string{ "PAL_DEVICE_OUT_LINE" },                 PAL_DEVICE_OUT_LINE},
     {std::string{ "PAL_DEVICE_OUT_BLUETOOTH_SCO" },        PAL_DEVICE_OUT_BLUETOOTH_SCO},
     {std::string{ "PAL_DEVICE_OUT_BLUETOOTH_A2DP" },       PAL_DEVICE_OUT_BLUETOOTH_A2DP},
+    {std::string{ "PAL_DEVICE_OUT_BLUETOOTH_BLE" },        PAL_DEVICE_OUT_BLUETOOTH_BLE},
     {std::string{ "PAL_DEVICE_OUT_AUX_DIGITAL" },          PAL_DEVICE_OUT_AUX_DIGITAL},
     {std::string{ "PAL_DEVICE_OUT_HDMI" },                 PAL_DEVICE_OUT_HDMI},
     {std::string{ "PAL_DEVICE_OUT_USB_DEVICE" },           PAL_DEVICE_OUT_USB_DEVICE},
@@ -488,6 +499,7 @@ static const std::map<std::string, pal_device_id_t> deviceIdLUT {
     {std::string{ "PAL_DEVICE_IN_PROXY" },                 PAL_DEVICE_IN_PROXY},
     {std::string{ "PAL_DEVICE_IN_HANDSET_VA_MIC" },        PAL_DEVICE_IN_HANDSET_VA_MIC},
     {std::string{ "PAL_DEVICE_IN_BLUETOOTH_A2DP" },        PAL_DEVICE_IN_BLUETOOTH_A2DP},
+    {std::string{ "PAL_DEVICE_IN_BLUETOOTH_BLE" },         PAL_DEVICE_IN_BLUETOOTH_BLE},
     {std::string{ "PAL_DEVICE_IN_HEADSET_VA_MIC" },        PAL_DEVICE_IN_HEADSET_VA_MIC},
     {std::string{ "PAL_DEVICE_IN_VI_FEEDBACK" },           PAL_DEVICE_IN_VI_FEEDBACK},
     {std::string{ "PAL_DEVICE_IN_TELEPHONY_RX" },          PAL_DEVICE_IN_TELEPHONY_RX},
@@ -509,6 +521,7 @@ static const std::map<uint32_t, std::string> deviceNameLUT {
     {PAL_DEVICE_OUT_LINE,                 std::string{"PAL_DEVICE_OUT_LINE"}},
     {PAL_DEVICE_OUT_BLUETOOTH_SCO,        std::string{"PAL_DEVICE_OUT_BLUETOOTH_SCO"}},
     {PAL_DEVICE_OUT_BLUETOOTH_A2DP,       std::string{"PAL_DEVICE_OUT_BLUETOOTH_A2DP"}},
+    {PAL_DEVICE_OUT_BLUETOOTH_BLE,        std::string{"PAL_DEVICE_OUT_BLUETOOTH_BLE"}},
     {PAL_DEVICE_OUT_AUX_DIGITAL,          std::string{"PAL_DEVICE_OUT_AUX_DIGITAL"}},
     {PAL_DEVICE_OUT_HDMI,                 std::string{"PAL_DEVICE_OUT_HDMI"}},
     {PAL_DEVICE_OUT_USB_DEVICE,           std::string{"PAL_DEVICE_OUT_USB_DEVICE"}},
@@ -537,6 +550,7 @@ static const std::map<uint32_t, std::string> deviceNameLUT {
     {PAL_DEVICE_IN_PROXY,                 std::string{"PAL_DEVICE_IN_PROXY"}},
     {PAL_DEVICE_IN_HANDSET_VA_MIC,        std::string{"PAL_DEVICE_IN_HANDSET_VA_MIC"}},
     {PAL_DEVICE_IN_BLUETOOTH_A2DP,        std::string{"PAL_DEVICE_IN_BLUETOOTH_A2DP"}},
+    {PAL_DEVICE_IN_BLUETOOTH_BLE,         std::string{"PAL_DEVICE_IN_BLUETOOTH_BLE"}},
     {PAL_DEVICE_IN_HEADSET_VA_MIC,        std::string{"PAL_DEVICE_IN_HEADSET_VA_MIC"}},
     {PAL_DEVICE_IN_VI_FEEDBACK,           std::string{"PAL_DEVICE_IN_VI_FEEDBACK"}},
     {PAL_DEVICE_IN_TELEPHONY_RX,          std::string{"PAL_DEVICE_IN_TELEPHONY_RX"}},
@@ -739,7 +753,7 @@ enum {
 /** metadata flags, can be OR'able */
 typedef uint32_t pal_meta_data_flags_t;
 
-typedef struct pal_extern_alloc_buff_info{
+typedef struct pal_extern_alloc_buff_info {
     int      alloc_handle;/**< unique memory handle identifying extern mem allocation */
     uint32_t alloc_size;  /**< size of external allocation */
     uint32_t offset;      /**< offset of buffer within extern allocation */
@@ -747,7 +761,7 @@ typedef struct pal_extern_alloc_buff_info{
 
 /** PAL buffer structure used for reading/writing buffers from/to the stream */
 struct pal_buffer {
-    uint8_t *buffer;                  /**<  buffer pointer */
+    uint8_t *buffer;               /**<  buffer pointer */
     size_t size;                   /**< number of bytes */
     size_t offset;                 /**< offset in buffer from where valid byte starts */
     struct timespec *ts;           /**< timestmap */
@@ -755,6 +769,22 @@ struct pal_buffer {
     size_t metadata_size;          /**< size of metadata buffer in bytes */
     uint8_t *metadata;             /**< metadata buffer. Can contain multiple metadata*/
     pal_extern_alloc_buff_info_t alloc_info; /**< holds info for extern buff */
+    uint64_t frame_index;          /**< frame index of the buffer */
+};
+
+struct pal_clbk_buffer_info {
+    uint64_t frame_index;       /**< frame index of the buffer */
+    uint32_t sample_rate;       /**< updated sample rate */
+    uint32_t bit_width;         /**< updated bit width */
+    uint16_t channel_count;     /**< updated channel count */
+};
+
+struct pal_callback_buffer {
+    uint8_t *buffer;               /**<  buffer pointer */
+    size_t size;                   /**< filled length of the buffer */
+    struct timespec *ts;           /**< timestamp */
+    uint32_t status;               /**< status of callback payload */
+    struct pal_clbk_buffer_info cb_buf_info;   /**< callback buffer info */
 };
 
 /** pal_mmap_buffer flags */
@@ -903,6 +933,25 @@ typedef enum {
     PAL_PARAM_ID_VOLUME_USING_SET_PARAM = 55,
     PAL_PARAM_ID_UHQA_FLAG = 56,
     PAL_PARAM_ID_STREAM_ATTRIBUTES = 57,
+    PAL_PARAM_ID_SET_UPD_DUTY_CYCLE = 58,
+    PAL_PARAM_ID_MSPP_LINEAR_GAIN = 59,
+    PAL_PARAM_ID_SET_SOURCE_METADATA = 60,
+    PAL_PARAM_ID_SET_SINK_METADATA = 61,
+    PAL_PARAM_ID_ULTRASOUND_RAMPDOWN = 62,
+    PAL_PARAM_ID_VOLUME_CTRL_RAMP = 63,
+    PAL_PARAM_ID_SVA_WAKEUP_MODULE_VERSION = 64,
+    PAL_PARAM_ID_GAIN_USING_SET_PARAM = 65,
+    PAL_PARAM_ID_HAPTICS_CNFG = 66,
+    PAL_PARAM_ID_WAKEUP_ENGINE_PER_MODEL_RESET = 67,
+    PAL_PARAM_ID_RECONFIG_ENCODER = 68,
+    PAL_PARAM_ID_VUI_SET_META_DATA = 69,
+    PAL_PARAM_ID_VUI_GET_META_DATA = 70,
+    PAL_PARAM_ID_VUI_CAPTURE_META_DATA = 71,
+    PAL_PARAM_ID_TIMESTRETCH_PARAMS = 72,
+    PAL_PARAM_ID_LATENCY_MODE = 73,
+    PAL_PARAM_ID_PROXY_RECORD_SESSION = 74,
+    PAL_PARAM_ID_MIC_OCCLUSION_INFO = 75,
+    PAL_PARAM_ID_ULTRASOUND_SET_GAIN = 76,
 } pal_param_id_type_t;
 
 /** HDMI/DP */
@@ -941,6 +990,10 @@ struct pal_amp_db_and_gain_table {
     float    amp;
     float    db;
     uint32_t level;
+};
+
+struct pal_vol_ctrl_ramp_param {
+    uint32_t ramp_period_ms;
 };
 
 /* Payload For ID: PAL_PARAM_ID_DEVICE_CONNECTION
@@ -1082,6 +1135,7 @@ typedef struct pal_param_btsco {
     int    bt_swb_speech_mode;
     bool   bt_lc3_speech_enabled;
     btsco_lc3_cfg_t lc3_cfg;
+    bool   is_bt_hfp;
 } pal_param_btsco_t;
 
 /* Payload For ID: PAL_PARAM_ID_BT_A2DP*
@@ -1096,6 +1150,9 @@ typedef struct pal_param_bta2dp {
     bool     is_lc3_mono_mode_on;
     bool     is_force_switch;
     uint32_t latency;
+    pal_device_id_t   dev_id;
+    bool     is_suspend_setparam;
+    bool     is_in_call;
 } pal_param_bta2dp_t;
 
 typedef struct pal_param_upd_event_detection {
@@ -1107,11 +1164,21 @@ typedef struct pal_bt_tws_payload_s {
     uint32_t codecFormat;
 } pal_bt_tws_payload;
 
+/* Payload For ID: PAL_PARAM_ID_MIC_OCCLUSION_INFO
+ * Description   : mic occlusion related information.
+*/
+typedef struct pal_param_mic_occlusion_info {
+    pal_device_id_t   id;                 /**< Pal device id */
+    bool              is_occluded;        /**< currently is mic occluded?*/
+    uint32_t          num_of_occlusion;   /**< number of occlusions */
+    uint32_t          num_of_recovery;    /**< number of recoveries after occlusion. */
+} pal_param_mic_occlusion_info_t;
+
 /* Payload For Custom Config
  * Description : Used by PAL client to customize
  *               the device related information.
 */
-#define PAL_MAX_CUSTOM_KEY_SIZE 128
+#define PAL_MAX_CUSTOM_KEY_SIZE 256
 typedef struct pal_device_custom_config {
     char custom_key[PAL_MAX_CUSTOM_KEY_SIZE];
 } pal_device_custom_config_t;
@@ -1124,11 +1191,20 @@ typedef struct pal_param_haptics_intensity {
     int intensity;
 } pal_param_haptics_intensity_t;
 
+/* Type of Ultrasound Gain */
+typedef enum {
+    PAL_ULTRASOUND_GAIN_MUTE = 0,
+    PAL_ULTRASOUND_GAIN_LOW,
+    PAL_ULTRASOUND_GAIN_HIGH,
+} pal_ultrasound_gain_t;
+
 /**< PAL device */
+#define DEVICE_NAME_MAX_SIZE 128
 struct pal_device {
     pal_device_id_t id;                     /**<  device id */
     struct pal_media_config config;         /**<  media config of the device */
     struct pal_usb_device_address address;
+    char sndDevName[DEVICE_NAME_MAX_SIZE];
     pal_device_custom_config_t custom_config;        /**<  Optional */
 };
 
@@ -1415,8 +1491,12 @@ typedef int32_t (*pal_global_callback)(uint32_t event_id, uint32_t *event_data, 
 typedef enum card_status_t {
     CARD_STATUS_OFFLINE = 0,
     CARD_STATUS_ONLINE,
+    CARD_STATUS_STANDBY,
     CARD_STATUS_NONE,
 } card_status_t;
+
+#define PAL_CARD_STATUS_DOWN(n)     (n == CARD_STATUS_OFFLINE || n == CARD_STATUS_STANDBY)
+#define PAL_CARD_STATUS_UP(n)       (n == CARD_STATUS_ONLINE)
 
 typedef struct pal_buffer_config {
     size_t buf_count; /**< number of buffers*/

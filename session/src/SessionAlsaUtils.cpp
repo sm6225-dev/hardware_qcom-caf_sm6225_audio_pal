@@ -26,8 +26,8 @@
 * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
 * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 *
-* Changes from Qualcomm Innovation Center are provided under the following license:
-* Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+* Changes from Qualcomm Technologies, Inc. are provided under the following license:
+* Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 * SPDX-License-Identifier: BSD-3-Clause-Clear
 */
 
@@ -350,7 +350,7 @@ int SessionAlsaUtils::open(Stream * streamHandle, std::shared_ptr<ResourceManage
     struct mixer_ctl *beMetaDataMixerCtrl = nullptr;
     std::vector<std::shared_ptr<Device>> associatedDevices;
     std::shared_ptr<Device> beDevObj = nullptr;
-    struct mixer *mixerHandle;
+    struct mixer *mixerHandle = nullptr;
     uint32_t i;
     uint32_t streamPropId[] = {0x08000010, 1, 0x1}; /** gsl_subgraph_platform_driver_props.xml */
     uint32_t devicePropId[] = {0x08000010, 2, 0x2, 0x5};
@@ -402,6 +402,10 @@ int SessionAlsaUtils::open(Stream * streamHandle, std::shared_ptr<ResourceManage
         }
     }
     status = rmHandle->getVirtualAudioMixer(&mixerHandle);
+    if (mixerHandle == nullptr) {
+        PAL_ERR(LOG_TAG, "mixerHandle is null");
+        goto exit;
+    }
 
     /** Get mixer controls (struct mixer_ctl *) for both FE and BE */
     if (sAttr.type == PAL_STREAM_COMPRESSED)
@@ -435,7 +439,7 @@ int SessionAlsaUtils::open(Stream * streamHandle, std::shared_ptr<ResourceManage
                     emptyKV);
         else {
             for (i = 0; i < associatedDevices.size(); i++) {
-                associatedDevices[i]->getDeviceAttributes(&dAttr);
+                associatedDevices[i]->getDeviceAttributes(&dAttr, streamHandle);
                 if (be->first == dAttr.id) {
                     break;
                 }
@@ -1406,7 +1410,7 @@ int SessionAlsaUtils::open(Stream * streamHandle, std::shared_ptr<ResourceManage
     struct mixer_ctl *txFeMixerCtrls[FE_MAX_NUM_MIXER_CONTROLS] = { nullptr };
     struct mixer_ctl *txBeMixerCtrl = nullptr;
     std::vector<std::shared_ptr<Device>> associatedDevices;
-    struct mixer *mixerHandle;
+    struct mixer *mixerHandle = nullptr;
     uint32_t streamPropId[] = {0x08000010, 1, 0x1}; /** gsl_subgraph_platform_driver_props.xml */
     uint32_t devicePropId[] = {0x08000010, 2, 0x2, 0x5};
     uint32_t streamDevicePropId[] = {0x08000010, 1, 0x3}; /** gsl_subgraph_platform_driver_props.xml */
@@ -1441,9 +1445,13 @@ int SessionAlsaUtils::open(Stream * streamHandle, std::shared_ptr<ResourceManage
     PayloadBuilder* builder = new PayloadBuilder();
 
     status = rmHandle->getVirtualAudioMixer(&mixerHandle);
+    if (mixerHandle == nullptr) {
+        PAL_ERR(LOG_TAG, "mixerHandle is null");
+        goto exit;
+    }
     // get keyvalue pair info
     for (i = 0; i < associatedDevices.size(); i++) {
-        associatedDevices[i]->getDeviceAttributes(&dAttr);
+        associatedDevices[i]->getDeviceAttributes(&dAttr, streamHandle);
         if (txBackEnds[0].first == dAttr.id) {
             isDeviceFound = true;
             break;
@@ -1805,7 +1813,7 @@ int SessionAlsaUtils::close(Stream * streamHandle, std::shared_ptr<ResourceManag
     struct mixer_ctl *txFeMixerCtrls[FE_MAX_NUM_MIXER_CONTROLS] = { nullptr };
     struct mixer_ctl *txBeMixerCtrl = nullptr;
     std::vector<std::shared_ptr<Device>> associatedDevices;
-    struct mixer *mixerHandle;
+    struct mixer *mixerHandle = nullptr;
     uint32_t streamPropId[] = {0x08000010, 1, 0x1}; /** gsl_subgraph_platform_driver_props.xml */
     uint32_t devicePropId[] = {0x08000010, 2, 0x2, 0x5};
     uint32_t streamDevicePropId[] = {0x08000010, 1, 0x3}; /** gsl_subgraph_platform_driver_props.xml */
@@ -1829,6 +1837,10 @@ int SessionAlsaUtils::close(Stream * streamHandle, std::shared_ptr<ResourceManag
         }
     }
     status = rmHandle->getVirtualAudioMixer(&mixerHandle);
+    if (mixerHandle == nullptr) {
+        PAL_ERR(LOG_TAG, "mixerHandle is null");
+        goto exit;
+    }
 
     // get audio mixer
     SessionAlsaUtils::getAgmMetaData(emptyKV, emptyKV,
@@ -2008,10 +2020,10 @@ int SessionAlsaUtils::disconnectSessionDevice(Stream* streamHandle, pal_stream_t
                 sub = 1;
             else
                 sub = 2;
-            if (dAttr.id >= PAL_DEVICE_OUT_HANDSET && dAttr.id <= PAL_DEVICE_OUT_HEARING_AID) {
+            if (dAttr.id > PAL_DEVICE_OUT_MIN && dAttr.id < PAL_DEVICE_OUT_MAX) {
                 feName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "p";
                 disconnectCtrlName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "p" << " disconnect";
-            } else if (dAttr.id >= PAL_DEVICE_IN_HANDSET_MIC && dAttr.id <= PAL_DEVICE_IN_PROXY) {
+            } else if (dAttr.id > PAL_DEVICE_IN_MIN && dAttr.id < PAL_DEVICE_IN_MAX) {
                 feName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "c";
                 disconnectCtrlName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "c" << " disconnect";
             }
@@ -2172,9 +2184,9 @@ int SessionAlsaUtils::connectSessionDevice(Session* sess, Stream* streamHandle, 
             else
                 sub = 2;
 
-            if (dAttr.id >= PAL_DEVICE_OUT_HANDSET && dAttr.id <= PAL_DEVICE_OUT_HEARING_AID) {
+            if (dAttr.id > PAL_DEVICE_OUT_MIN && dAttr.id < PAL_DEVICE_OUT_MAX) {
                 connectCtrlName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "p" << " connect";
-            } else if (dAttr.id >= PAL_DEVICE_IN_HANDSET_MIC && dAttr.id <= PAL_DEVICE_IN_PROXY) {
+            } else if (dAttr.id > PAL_DEVICE_IN_MIN && dAttr.id < PAL_DEVICE_IN_MAX) {
                 connectCtrlName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "c" << " connect";
             }
             break;
@@ -2527,11 +2539,11 @@ int SessionAlsaUtils::setupSessionDevice(Stream* streamHandle, pal_stream_type_t
             else
                 sub = 2;
 
-            if (dAttr.id >= PAL_DEVICE_OUT_HANDSET && dAttr.id <= PAL_DEVICE_OUT_HEARING_AID) {
+            if (dAttr.id > PAL_DEVICE_OUT_MIN && dAttr.id < PAL_DEVICE_OUT_MAX) {
                 cntrlName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "p" << " control";
                 aifMdName << aifBackEndsToConnect[0].second.data() << " metadata";
                 feMdName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "p" << " metadata";
-            } else if (dAttr.id >= PAL_DEVICE_IN_HANDSET_MIC && dAttr.id <= PAL_DEVICE_IN_PROXY) {
+            } else if (dAttr.id > PAL_DEVICE_IN_MIN && dAttr.id < PAL_DEVICE_IN_MAX) {
                 cntrlName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "c" << " control";
                 aifMdName << aifBackEndsToConnect[0].second.data() << " metadata";
                 feMdName << PCM_SND_VOICE_DEV_NAME_PREFIX << sub << "c" << " metadata";

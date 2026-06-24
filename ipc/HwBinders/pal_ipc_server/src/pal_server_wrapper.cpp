@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2025 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -27,12 +28,13 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * Changes from Qualcomm Innovation Center are provided under the following license:
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2025 Qualcomm Innovation Center, Inc. All rights reserved.
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
 #define LOG_TAG "pal_server_wrapper"
 #include "inc/pal_server_wrapper.h"
+#include "MetadataParser.h"
 #include <hwbinder/IPCThreadState.h>
 
 #define MAX_CACHE_SIZE 64
@@ -41,6 +43,49 @@ using vendor::qti::hardware::pal::V1_0::IPAL;
 using android::hardware::hidl_handle;
 using android::hardware::hidl_memory;
 
+// map<FD, map<offset, input_frame_id>>
+std::map<int, std::map<uint32_t, uint64_t>> gInputsPendingAck;
+std::mutex gInputsPendingAckLock;
+
+void addToPendingInputs(int fd, uint32_t offset, uint32_t ip_frame_id) {
+    ALOGV("%s: fd %d, offset %u", __func__, fd, offset);
+    std::lock_guard<std::mutex> pendingAcksLock(gInputsPendingAckLock);
+    auto itFd = gInputsPendingAck.find(fd);
+    if (itFd != gInputsPendingAck.end()) {
+        gInputsPendingAck[fd][offset] = ip_frame_id;
+        ALOGV("%s: added offset %u and frame id %u", __func__, offset,
+               (uint32_t)gInputsPendingAck[fd][offset]);
+    } else {
+        //create new map<offset,input_buffer_index> and add to FD map
+        ALOGV("%s: added map for fd %lu", __func__, (unsigned long)fd);
+        gInputsPendingAck.insert(std::make_pair(fd, std::map<uint32_t, uint64_t>()));
+        ALOGV("%s: added frame id %lu for fd %d offset %u", __func__,
+                    (unsigned long)ip_frame_id,  fd, (unsigned int)offset);
+        gInputsPendingAck[fd].insert(std::make_pair(offset, ip_frame_id));
+    }
+}
+
+int getInputBufferIndex(int fd, uint32_t offset, uint64_t &buf_index) {
+    int status = 0;
+
+    std::lock_guard<std::mutex> pendingAcksLock(gInputsPendingAckLock);
+    ALOGV("%s: fd %d, offset %u", __func__, fd, offset);
+    std::map<int, std::map<uint32_t, uint64_t>>::iterator itFd = gInputsPendingAck.find(fd);
+    if (itFd != gInputsPendingAck.end()) {
+        std::map<uint32_t, uint64_t> offsetToFrameIdxMap = itFd->second;
+        auto itOffsetFrameIdxPair = offsetToFrameIdxMap.find(offset);
+        if (itOffsetFrameIdxPair != offsetToFrameIdxMap.end()){
+            buf_index = itOffsetFrameIdxPair->second;
+            ALOGV("%s ip_frame_id=%lu", __func__, (unsigned long)buf_index);
+        } else {
+            status = -EINVAL;
+            ALOGE("%s: Entry doesn't exist for FD 0x%x and offset 0x%x",
+                    __func__, fd, offset);
+        }
+        gInputsPendingAck.erase(itFd);
+    }
+    return status;
+}
 
 namespace vendor {
 namespace qti {
@@ -57,6 +102,7 @@ void PalClientDeathRecipient::serviceDied(uint64_t cookie,
     std::lock_guard<std::mutex> guard(mLock);
     ALOGD("%s : client died pid : %d", __func__, cookie);
     int pid = (int) cookie;
+    std::lock_guard<std::mutex> lock(mPalInstance->mClientLock);
     auto &clients = mPalInstance->mPalClients;
     for (auto itr = clients.begin(); itr != clients.end(); itr++) {
         auto client = *itr;
@@ -88,6 +134,7 @@ void PalClientDeathRecipient::serviceDied(uint64_t cookie,
 void PAL::add_input_and_dup_fd(const uint64_t streamHandle, int input_fd, int dup_fd)
 {
     std::vector<std::pair<int, int>>::iterator it;
+    std::lock_guard<std::mutex> guard(mClientLock);
     for (auto& s: mPalClients) {
         std::lock_guard<std::mutex> lock(s->mActiveSessionsLock);
         for (int i = 0; i < s->mActiveSessions.size(); i++) {
@@ -131,6 +178,7 @@ static int32_t pal_callback(pal_stream_handle_t *stream_handle,
            ALOGE("%s: No PAL instance running", __func__);
            return false;
         }
+        std::lock_guard<std::mutex> guard(PAL::getInstance()->mClientLock);
         for (auto& s: PAL::getInstance()->mPalClients) {
             std::lock_guard<std::mutex> lock(s->mActiveSessionsLock);
             for (int idx = 0; idx < s->mActiveSessions.size(); idx++) {
@@ -153,91 +201,111 @@ static int32_t pal_callback(pal_stream_handle_t *stream_handle,
     if ((sr_clbk_dat->session_attr.type == PAL_STREAM_NON_TUNNEL) &&
           ((event_id == PAL_STREAM_CBK_EVENT_READ_DONE) ||
            (event_id == PAL_STREAM_CBK_EVENT_WRITE_READY))) {
-        hidl_vec<PalEventReadWriteDonePayload> rwDonePayloadHidl;
-        PalEventReadWriteDonePayload *rwDonePayload;
+        hidl_vec<PalCallbackBuffer> rwDonePayloadHidl;
+        PalCallbackBuffer *rwDonePayload;
         struct pal_event_read_write_done_payload *rw_done_payload;
         int input_fd = -1;
         int fdToBeClosed = -1;
-        native_handle_t *allocHidlHandle = nullptr;
-        allocHidlHandle = native_handle_create(1, 1);
-        if (!allocHidlHandle) {
-            ALOGE("handle allocHidlHandle is NULL");
-            return -EINVAL;
-        }
 
         rw_done_payload = (struct pal_event_read_write_done_payload *)event_data;
         /*
          * Find the original fd that was passed by client based on what
          * input and dup fd list and send that back.
          */
+        PAL::getInstance()->mClientLock.lock();
         for (auto& s: PAL::getInstance()->mPalClients) {
             std::lock_guard<std::mutex> lock(s->mActiveSessionsLock);
             for (int idx = 0; idx < s->mActiveSessions.size(); idx++) {
                 session_info session = s->mActiveSessions[idx];
-                if (session.session_handle == (uint64_t)stream_handle) {
-                    std::vector<std::pair<int, int>>::iterator it;
-                    for (int i = 0; i < sr_clbk_dat->sharedMemFdList.size(); i++) {
-                        if (sr_clbk_dat->sharedMemFdList[i].second ==
-                                rw_done_payload->buff.alloc_info.alloc_handle) {
-                            input_fd = sr_clbk_dat->sharedMemFdList[i].first;
-                            it = (sr_clbk_dat->sharedMemFdList.begin() + i);
-                            if (it != sr_clbk_dat->sharedMemFdList.end()) {
-                                fdToBeClosed = sr_clbk_dat->sharedMemFdList[i].second;
-                                sr_clbk_dat->sharedMemFdList.erase(it);
-                                ALOGV("Removing fd [input %d - dup %d]", input_fd, fdToBeClosed);
-                            }
-                            break;
+                if (session.session_handle != (uint64_t)stream_handle) {
+                    continue;
+                }
+                std::vector<std::pair<int, int>>::iterator it;
+                for (int i = 0; i < sr_clbk_dat->sharedMemFdList.size(); i++) {
+                    if (sr_clbk_dat->sharedMemFdList[i].second ==
+                            rw_done_payload->buff.alloc_info.alloc_handle) {
+                        input_fd = sr_clbk_dat->sharedMemFdList[i].first;
+                        it = (sr_clbk_dat->sharedMemFdList.begin() + i);
+                        if (it != sr_clbk_dat->sharedMemFdList.end()) {
+                            fdToBeClosed = sr_clbk_dat->sharedMemFdList[i].second;
+                            sr_clbk_dat->sharedMemFdList.erase(it);
+                            ALOGV("Removing fd [input %d - dup %d]", input_fd, fdToBeClosed);
                         }
+                        break;
                     }
                 }
             }
         }
+        PAL::getInstance()->mClientLock.unlock();
 
-        rwDonePayloadHidl.resize(sizeof(struct pal_event_read_write_done_payload));
-        rwDonePayload =(PalEventReadWriteDonePayload *)rwDonePayloadHidl.data();
-        rwDonePayload->tag = rw_done_payload->tag;
+        rwDonePayloadHidl.resize(sizeof(pal_callback_buffer));
+        rwDonePayload =(PalCallbackBuffer *)rwDonePayloadHidl.data();
         rwDonePayload->status = rw_done_payload->status;
-        rwDonePayload->md_status = rw_done_payload->md_status;
+        switch (rw_done_payload->md_status) {
+            case ENOTRECOVERABLE: {
+                ALOGE("%s: Error, md cannot be parsed in buffer", __func__);
+                rwDonePayload->status = rw_done_payload->md_status;
+                break;
+            }
+            case EOPNOTSUPP: {
+                ALOGE("%s: Error, md id not recognized in buffer", __func__);
+                rwDonePayload->status = rw_done_payload->md_status;
+                break;
+            }
+            case ENOMEM: {
+                ALOGE("%s: Error, md buffer size received is small", __func__);
+                rwDonePayload->status = rw_done_payload->md_status;
+                break;
+            }
+            default: {
+                if (rw_done_payload->md_status) {
+                    ALOGE("%s: Error received during callback, md status = 0x%x",
+                           __func__, rw_done_payload->md_status);
+                    rwDonePayload->status = rw_done_payload->md_status;
+                }
+                break;
+            }
+        }
 
-        rwDonePayload->buff.offset = rw_done_payload->buff.offset;
-        rwDonePayload->buff.flags = rw_done_payload->buff.flags;
-        rwDonePayload->buff.size = rw_done_payload->buff.size;
+        if (!rwDonePayload->status) {
+            auto metadataParser = std::make_unique<MetadataParser>();
+            if (event_id == PAL_STREAM_CBK_EVENT_READ_DONE) {
+                auto cb_buf_info = std::make_unique<pal_clbk_buffer_info>();
+                rwDonePayload->status = metadataParser->parseMetadata(
+                            rw_done_payload->buff.metadata,
+                            rw_done_payload->buff.metadata_size,
+                            cb_buf_info.get());
+                rwDonePayload->cbBufInfo.frame_index = cb_buf_info->frame_index;
+                rwDonePayload->cbBufInfo.sample_rate = cb_buf_info->sample_rate;
+                rwDonePayload->cbBufInfo.channel_count = cb_buf_info->channel_count;
+                rwDonePayload->cbBufInfo.bit_width = cb_buf_info->bit_width;
+            } else if (event_id == PAL_STREAM_CBK_EVENT_WRITE_READY) {
+                rwDonePayload->status = getInputBufferIndex(
+                            rw_done_payload->buff.alloc_info.alloc_handle,
+                            rw_done_payload->buff.alloc_info.offset,
+                            rwDonePayload->cbBufInfo.frame_index);
+            }
+            ALOGV("%s: frame_index=%u", __func__, rwDonePayload->cbBufInfo.frame_index);
+        }
+
+        rwDonePayload->size = rw_done_payload->buff.size;
         if (rw_done_payload->buff.ts != NULL) {
-            rwDonePayload->buff.timeStamp.tvSec = rw_done_payload->buff.ts->tv_sec;
-            rwDonePayload->buff.timeStamp.tvNSec = rw_done_payload->buff.ts->tv_nsec;
+            rwDonePayload->timeStamp.tvSec = rw_done_payload->buff.ts->tv_sec;
+            rwDonePayload->timeStamp.tvNSec = rw_done_payload->buff.ts->tv_nsec;
         }
         if ((rw_done_payload->buff.buffer != NULL) &&
              !(sr_clbk_dat->session_attr.flags & PAL_STREAM_FLAG_EXTERN_MEM)) {
-            rwDonePayload->buff.buffer.resize(rwDonePayload->buff.size);
-            memcpy(rwDonePayload->buff.buffer.data(), rw_done_payload->buff.buffer,
-                   rwDonePayload->buff.size);
-        }
-        if ((rw_done_payload->buff.metadata_size > 0) &&
-             rw_done_payload->buff.metadata) {
-            ALOGV("metadatasize %d ", rw_done_payload->buff.metadata_size);
-            rwDonePayload->buff.metadataSz = rw_done_payload->buff.metadata_size;
-            rwDonePayload->buff.metadata.resize(rwDonePayload->buff.metadataSz);
-            memcpy(rwDonePayload->buff.metadata.data(), rw_done_payload->buff.metadata,
-                    rwDonePayload->buff.metadataSz);
+            rwDonePayload->buffer.resize(rwDonePayload->size);
+            memcpy(rwDonePayload->buffer.data(), rw_done_payload->buff.buffer,
+                   rwDonePayload->size);
         }
 
-        allocHidlHandle->data[0] = rw_done_payload->buff.alloc_info.alloc_handle;
-        allocHidlHandle->data[1] = input_fd;
         ALOGV("fd [input %d - dup %d]", input_fd, rw_done_payload->buff.alloc_info.alloc_handle);
-        rwDonePayload->buff.alloc_info.alloc_handle = hidl_memory("arpal_alloc_handle",
-                                                       hidl_handle(allocHidlHandle),
-                                                       rw_done_payload->buff.alloc_info.alloc_size);
-
-        rwDonePayload->buff.alloc_info.alloc_size = rw_done_payload->buff.alloc_info.alloc_size;
-        rwDonePayload->buff.alloc_info.offset = rw_done_payload->buff.alloc_info.offset;
         if (!sr_clbk_dat->client_died) {
-            auto status = clbk_bdr->event_callback_rw_done((uint64_t)stream_handle, event_id,
-                              sizeof(struct pal_event_read_write_done_payload),
-                              rwDonePayloadHidl,
-                              sr_clbk_dat->client_data_);
-            if (!status.isOk()) {
-                 ALOGE("%s: HIDL call failed during event_callback_rw_done ", __func__);
-            }
+            clbk_bdr->event_callback_rw_done((uint64_t)stream_handle, event_id,
+                    sizeof(pal_callback_buffer),
+                    rwDonePayloadHidl,
+                    sr_clbk_dat->client_data_);
         } else
             ALOGE("Client died dropping this event %d", event_id);
 
@@ -247,8 +315,6 @@ static int32_t pal_callback(pal_stream_handle_t *stream_handle,
         } else {
             ALOGE("Error finding fd %d", rw_done_payload->buff.alloc_info.alloc_handle);
         }
-        if (allocHidlHandle)
-            native_handle_delete(allocHidlHandle);
     } else {
         hidl_vec<uint8_t> PayloadHidl;
         PayloadHidl.resize(event_data_size);
@@ -309,6 +375,32 @@ static void print_attr(struct pal_stream_attributes *attr)
    print_stream_info(&attr->info);
    print_media_config(&attr->in_media_config);
    print_media_config(&attr->out_media_config);
+}
+
+bool PAL::isValidstreamHandle(const uint64_t streamHandle) {
+    int pid = ::android::hardware::IPCThreadState::self()->getCallingPid();
+
+    std::lock_guard<std::mutex> guard(mClientLock);
+    for (auto itr = mPalClients.begin(); itr != mPalClients.end(); ) {
+        auto client = *itr;
+        if (client->pid == pid) {
+            std::lock_guard<std::mutex> lock(client->mActiveSessionsLock);
+            auto sItr = client->mActiveSessions.begin();
+            for (; sItr != client->mActiveSessions.end(); sItr++) {
+                if (sItr->session_handle == streamHandle) {
+                    return true;
+                }
+            }
+            ALOGE("%s: streamHandle: %pK for pid %d not found",
+                    __func__, streamHandle, pid);
+            return false;
+        }
+        itr++;
+    }
+
+    ALOGE("%s: client info for pid %d not found",
+            __func__, pid);
+    return false;
 }
 
 Return<void> PAL::ipc_pal_stream_open(const hidl_vec<PalStreamAttributes>& attr_hidl,
@@ -414,6 +506,7 @@ Return<void> PAL::ipc_pal_stream_open(const hidl_vec<PalStreamAttributes>& attr_
                           callback, (uint64_t)sr_clbk_data.get(), &stream_handle);
 
     if (!ret) {
+        std::lock_guard<std::mutex> guard(mClientLock);
         for(auto& client: mPalClients) {
             if (client->pid == pid) {
                 /*Another session from the same client*/
@@ -469,8 +562,13 @@ exit:
 Return<int32_t> PAL::ipc_pal_stream_close(const uint64_t streamHandle)
 {
     int pid = ::android::hardware::IPCThreadState::self()->getCallingPid();
-    Return<int32_t> status = pal_stream_close((pal_stream_handle_t *)streamHandle);
 
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
+    mClientLock.lock();
     for (auto itr = mPalClients.begin(); itr != mPalClients.end(); ) {
         auto client = *itr;
         if (client->pid == pid) {
@@ -503,38 +601,77 @@ Return<int32_t> PAL::ipc_pal_stream_close(const uint64_t streamHandle)
             break;
         }
     }
+    mClientLock.unlock();
+
+    Return<int32_t> status = pal_stream_close((pal_stream_handle_t *)streamHandle);
+
     return status;
 }
 
 Return<int32_t> PAL::ipc_pal_stream_start(const uint64_t streamHandle) {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
 
     return pal_stream_start((pal_stream_handle_t *)streamHandle);
 }
 
 Return<int32_t> PAL::ipc_pal_stream_stop(const uint64_t streamHandle) {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_stream_stop((pal_stream_handle_t *)streamHandle);
 }
 
 Return<int32_t> PAL::ipc_pal_stream_pause(const uint64_t streamHandle) {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_stream_pause((pal_stream_handle_t *)streamHandle);
 }
 
 Return<int32_t> PAL::ipc_pal_stream_drain(uint64_t streamHandle, PalDrainType type)
 {
     pal_drain_type_t drain_type = (pal_drain_type_t) type;
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_stream_drain((pal_stream_handle_t *)streamHandle,
                              drain_type);
 }
 
 Return<int32_t> PAL::ipc_pal_stream_flush(const uint64_t streamHandle) {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_stream_flush((pal_stream_handle_t *)streamHandle);
 }
 
 Return<int32_t> PAL::ipc_pal_stream_suspend(const uint64_t streamHandle) {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_stream_suspend((pal_stream_handle_t *)streamHandle);
 }
 
 Return<int32_t> PAL::ipc_pal_stream_resume(const uint64_t streamHandle) {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_stream_resume((pal_stream_handle_t *)streamHandle);
 }
 
@@ -547,13 +684,26 @@ Return<void> PAL::ipc_pal_stream_set_buffer_size(const uint64_t streamHandle,
     pal_buffer_config_t out_buf_cfg, in_buf_cfg;
     PalBufferConfig in_buff_config_ret, out_buff_config_ret;
 
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return Void();
+    }
+
     in_buf_cfg.buf_count = in_buff_config.buf_count;
     in_buf_cfg.buf_size = in_buff_config.buf_size;
-    in_buf_cfg.max_metadata_size =  in_buff_config.max_metadata_size;
+    if (in_buff_config.max_metadata_size) {
+        in_buf_cfg.max_metadata_size = in_buff_config.max_metadata_size;
+    } else {
+        in_buf_cfg.max_metadata_size = MetadataParser::WRITE_METADATA_MAX_SIZE();
+    }
 
     out_buf_cfg.buf_count = out_buff_config.buf_count;
     out_buf_cfg.buf_size = out_buff_config.buf_size;
-    out_buf_cfg.max_metadata_size =  out_buff_config.max_metadata_size;
+    if (out_buff_config.max_metadata_size) {
+        out_buf_cfg.max_metadata_size = out_buff_config.max_metadata_size;
+    } else {
+        out_buf_cfg.max_metadata_size = MetadataParser::READ_METADATA_MAX_SIZE();
+    }
 
     ret = pal_stream_set_buffer_size((pal_stream_handle_t *)streamHandle,
                                     &in_buf_cfg, &out_buf_cfg);
@@ -589,35 +739,45 @@ Return<void> PAL::ipc_pal_stream_get_buffer_size(const uint64_t streamHandle,
 
 Return<int32_t> PAL::ipc_pal_stream_write(const uint64_t streamHandle,
                                           const hidl_vec<PalBuffer>& buff_hidl) {
-    int32_t ret = -ENOMEM;
     struct pal_buffer buf = {0};
-    uint32_t bufSize;
-    const native_handle *allochandle = nullptr;
-    bufSize = buff_hidl.data()->size;
-    if (buff_hidl.data()->buffer.size() == bufSize)
-        buf.buffer = (uint8_t *)calloc(1, bufSize);
-    buf.size = (size_t)bufSize;
-    buf.offset = (size_t)buff_hidl.data()->offset;
-    buf.ts = (struct timespec *) calloc(1, sizeof(struct timespec));
-    if (!buf.ts) {
-        ALOGE("Not enough memory for buf.ts ");
-        goto exit;
-    }
-    buf.ts->tv_sec =  buff_hidl.data()->timeStamp.tvSec;
-    buf.ts->tv_nsec = buff_hidl.data()->timeStamp.tvNSec;
-    buf.flags = buff_hidl.data()->flags;
-    if (buff_hidl.data()->metadataSz) {
-        buf.metadata_size = buff_hidl.data()->metadataSz;
-        buf.metadata = (uint8_t *)calloc(1, buf.metadata_size);
-        if (!buf.metadata) {
-            ALOGE("Not enough memory for buf.metadata");
-            goto exit;
-        }
-        memcpy(buf.metadata, buff_hidl.data()->metadata.data(),
-               buf.metadata_size);
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
     }
 
-    allochandle = buff_hidl.data()->alloc_info.alloc_handle.handle();
+    buf.size = buff_hidl.data()->size;
+    std::vector<uint8_t> dataBuffer;
+    if (buff_hidl.data()->buffer.size() == buf.size) {
+        dataBuffer.resize(buf.size);
+        buf.buffer = dataBuffer.data();
+    }
+    buf.offset = (size_t)buff_hidl.data()->offset;
+    auto timeStamp = std::make_unique<timespec>();
+    timeStamp->tv_sec =  buff_hidl.data()->timeStamp.tvSec;
+    timeStamp->tv_nsec = buff_hidl.data()->timeStamp.tvNSec;
+    buf.ts = timeStamp.get();
+    buf.flags = buff_hidl.data()->flags;
+    buf.frame_index = buff_hidl.data()->frame_index;
+
+    buf.metadata_size = MetadataParser::WRITE_METADATA_MAX_SIZE();
+    std::vector<uint8_t> bufMetadata(buf.metadata_size, 0);
+    buf.metadata = bufMetadata.data();
+    auto stream_media_config = std::make_shared<pal_media_config>();
+    for (auto& s: PAL::getInstance()->mPalClients) {
+        std::lock_guard<std::mutex> lock(s->mActiveSessionsLock);
+        for (auto session : s->mActiveSessions) {
+            if (session.session_handle == streamHandle) {
+                memcpy((uint8_t *)stream_media_config.get(),
+                       (uint8_t *)&session.callback_binder->session_attr.out_media_config,
+                       sizeof(pal_media_config));
+            }
+        }
+    }
+    auto metadataParser = std::make_unique<MetadataParser>();
+    metadataParser->fillMetaData(buf.metadata, buf.frame_index, buf.size,
+                                 stream_media_config.get());
+    const native_handle *allochandle = buff_hidl.data()->alloc_info.alloc_handle.handle();
 
     buf.alloc_info.alloc_handle = dup(allochandle->data[0]);
     add_input_and_dup_fd(streamHandle, allochandle->data[1], buf.alloc_info.alloc_handle);
@@ -626,41 +786,33 @@ Return<int32_t> PAL::ipc_pal_stream_write(const uint64_t streamHandle,
     buf.alloc_info.alloc_size = buff_hidl.data()->alloc_info.alloc_size;
     buf.alloc_info.offset = buff_hidl.data()->alloc_info.offset;
 
-    if (buf.buffer != NULL)
-        memcpy(buf.buffer, buff_hidl.data()->buffer.data(), bufSize);
-    ALOGV("%s:%d sz %d", __func__,__LINE__,bufSize);
-    ret = pal_stream_write((pal_stream_handle_t *)streamHandle, &buf);
-exit:
     if (buf.buffer)
-        free(buf.buffer);
-    if (buf.ts)
-        free(buf.ts);
-    if (buf.metadata)
-        free(buf.metadata);
-    return ret;
+        memcpy(buf.buffer, buff_hidl.data()->buffer.data(), buf.size);
+    ALOGV("%s:%d sz %d, frame_index %u", __func__,__LINE__, buf.size, buf.frame_index);
+
+    addToPendingInputs(buf.alloc_info.alloc_handle,
+                       buf.alloc_info.offset, buf.frame_index);
+
+    return pal_stream_write((pal_stream_handle_t *)streamHandle, &buf);
 }
 
 Return<void> PAL::ipc_pal_stream_read(const uint64_t streamHandle,
                                       const hidl_vec<PalBuffer>& inBuff_hidl,
                                       ipc_pal_stream_read_cb _hidl_cb) {
     struct pal_buffer buf;
-    int32_t ret = 0;
     hidl_vec<PalBuffer> outBuff_hidl;
-    uint32_t bufSize;
-    const native_handle *allochandle = nullptr;
 
-    bufSize = inBuff_hidl.data()->size;
-    buf.buffer = (uint8_t *)calloc(1, bufSize);
-    buf.size = (size_t)bufSize;
-    buf.metadata_size = inBuff_hidl.data()->metadataSz;
-    buf.metadata = (uint8_t *)calloc(1, buf.metadata_size);
-    if (!buf.metadata) {
-        ALOGE("Not enough memory for buf.metadata");
-        goto exit;
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return Void();
     }
 
+    buf.size = inBuff_hidl.data()->size;
+    std::vector<uint8_t> dataBuffer(buf.size, 0);
+    buf.buffer = dataBuffer.data();
+    buf.metadata_size = MetadataParser::READ_METADATA_MAX_SIZE();
 
-    allochandle = inBuff_hidl.data()->alloc_info.alloc_handle.handle();
+    const native_handle *allochandle = inBuff_hidl.data()->alloc_info.alloc_handle.handle();
 
     buf.alloc_info.alloc_handle = dup(allochandle->data[0]);
     add_input_and_dup_fd(streamHandle, allochandle->data[1], buf.alloc_info.alloc_handle);
@@ -669,7 +821,7 @@ Return<void> PAL::ipc_pal_stream_read(const uint64_t streamHandle,
     buf.alloc_info.alloc_size = inBuff_hidl.data()->alloc_info.alloc_size;
     buf.alloc_info.offset = inBuff_hidl.data()->alloc_info.offset;
 
-    ret = pal_stream_read((pal_stream_handle_t *)streamHandle, &buf);
+    int32_t ret = pal_stream_read((pal_stream_handle_t *)streamHandle, &buf);
     if (ret > 0) {
         outBuff_hidl.resize(sizeof(struct pal_buffer));
         outBuff_hidl.data()->size = (uint32_t)buf.size;
@@ -681,18 +833,8 @@ Return<void> PAL::ipc_pal_stream_read(const uint64_t streamHandle,
           outBuff_hidl.data()->timeStamp.tvSec = buf.ts->tv_sec;
           outBuff_hidl.data()->timeStamp.tvNSec = buf.ts->tv_nsec;
         }
-        if (buf.metadata_size) {
-           outBuff_hidl.data()->metadata.resize(buf.metadata_size);
-           memcpy(outBuff_hidl.data()->metadata.data(),
-                  buf.metadata, buf.metadata_size);
-        }
     }
     _hidl_cb(ret, outBuff_hidl);
-exit:
-    if (buf.buffer)
-        free(buf.buffer);
-    if (buf.metadata)
-        free(buf.metadata);
     return Void();
 }
 
@@ -709,6 +851,12 @@ Return<int32_t> PAL::ipc_pal_stream_set_param(const uint64_t streamHandle, uint3
         ALOGE("Invalid payload size");
         return -EINVAL;
     }
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     param_payload = (pal_param_payload *)calloc (1,
                                     sizeof(pal_param_payload) + paramPayload.data()->size);
     if (!param_payload) {
@@ -730,6 +878,12 @@ Return<void> PAL::ipc_pal_stream_get_param(const uint64_t streamHandle,
     int32_t ret = 0;
     pal_param_payload *param_payload;
     hidl_vec<PalParamPayload> paramPayload;
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return Void();
+    }
+
     ret = pal_stream_get_param((pal_stream_handle_t *)streamHandle, paramId, &param_payload);
     if (ret == 0) {
         paramPayload.resize(sizeof(PalParamPayload));
@@ -757,10 +911,17 @@ Return<int32_t> PAL::ipc_pal_stream_set_device(const uint64_t streamHandle,
     struct pal_device *devices = NULL;
     int cnt = 0;
     int32_t ret = -ENOMEM;
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     if (noOfDevices > devs_hidl.size()) {
         ALOGE("Invalid noOfDevices");
         return -EINVAL;
     }
+
     if (devs_hidl.size()) {
         PalDevice *dev_hidl = NULL;
         devices = (struct pal_device *)calloc (1,
@@ -811,6 +972,12 @@ Return<int32_t> PAL::ipc_pal_stream_set_volume(const uint64_t streamHandle,
         ALOGE("Invalid vol vector size");
         return -EINVAL;
     }
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     volume = (struct pal_volume_data *) calloc(1,
                                         sizeof(struct pal_volume_data) +
                                         noOfVolPairs * sizeof(pal_channel_vol_kv));
@@ -843,6 +1010,11 @@ Return<void> PAL::ipc_pal_stream_get_mute(const uint64_t streamHandle,
 Return<int32_t> PAL::ipc_pal_stream_set_mute(const uint64_t streamHandle,
                                     bool state)
 {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_stream_set_mute((pal_stream_handle_t *)streamHandle, state);
 }
 
@@ -861,6 +1033,12 @@ Return<void> PAL::ipc_pal_get_timestamp(const uint64_t streamHandle,
 {
     struct pal_session_time stime;
     int32_t ret = 0;
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return Void();
+    }
+
     hidl_vec<PalSessionTime> sessTime_hidl;
     sessTime_hidl.resize(sizeof(struct pal_session_time));
     ret = pal_get_timestamp((pal_stream_handle_t *)streamHandle, &stime);
@@ -873,6 +1051,11 @@ Return<int32_t> PAL::ipc_pal_add_remove_effect(const uint64_t streamHandle,
                                           const PalAudioEffect effect,
                                           bool enable)
 {
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return -EINVAL;
+    }
+
     return pal_add_remove_effect((pal_stream_handle_t *)streamHandle,
                                    (pal_audio_effect_t) effect, enable);
 }
@@ -932,6 +1115,12 @@ Return<void>PAL::ipc_pal_stream_create_mmap_buffer(PalStreamHandle streamHandle,
     int32_t ret = 0;
     struct pal_mmap_buffer info;
     hidl_vec<PalMmapBuffer> mMapBuffer_hidl;
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return Void();
+    }
+
     mMapBuffer_hidl.resize(sizeof(struct pal_mmap_buffer));
     ret = pal_stream_create_mmap_buffer((pal_stream_handle_t *)streamHandle, min_size_frames, &info);
     mMapBuffer_hidl.data()->buffer = (uint64_t)info.buffer;
@@ -949,6 +1138,12 @@ Return<void>PAL::ipc_pal_stream_get_mmap_position(PalStreamHandle streamHandle,
     int32_t ret = 0;
     struct pal_mmap_position mmap_position;
     hidl_vec<PalMmapPosition> mmap_position_hidl;
+
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return Void();
+    }
+
     mmap_position_hidl.resize(sizeof(struct pal_mmap_position));
     ret = pal_stream_get_mmap_position((pal_stream_handle_t *)streamHandle, &mmap_position);
     memcpy(mmap_position_hidl.data(), &mmap_position, sizeof(struct pal_mmap_position));
@@ -977,6 +1172,11 @@ Return<void>PAL::ipc_pal_stream_get_tags_with_module_info(PalStreamHandle stream
     size_t sz = size;
     hidl_vec<uint8_t> payloadRet;
 
+    if (!isValidstreamHandle(streamHandle)) {
+        ALOGE("%s: Invalid streamHandle: %pK", __func__, streamHandle);
+        return Void();
+    }
+
     if (size > 0) {
         payload = (uint8_t *)calloc(1, size);
         if (!payload) {
@@ -998,7 +1198,7 @@ Return<void>PAL::ipc_pal_stream_get_tags_with_module_info(PalStreamHandle stream
 
 
 IPAL* HIDL_FETCH_IPAL(const char* /* name */) {
-    ALOGV("%s");
+    ALOGV("%s", __func__);
     return new PAL();
 }
 

@@ -25,9 +25,9 @@
 <!-- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN -->
 <!-- IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.                          -->
 
-<!-- Changes from Qualcomm Innovation Center are provided under the following license:    -->
+<!-- Changes from Qualcomm Innovation Center, Inc. are provided under the following license:    -->
 <!--                                                                                      -->
-<!-- Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.             -->
+<!-- Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.             -->
 <!-- SPDX-License-Identifier: BSD-3-Clause-Clear                                          -->
 <mixer>
     <!-- These are the initial mixer settings -->
@@ -2863,6 +2863,12 @@
 
     </path>
 
+    <path name="ultrasound-mic">
+        <ctl name="TX_CDC_DMA_TX_4 Channels" value="One" />
+        <ctl name="TX_AIF2_CAP Mixer DEC3" value="1" />
+        <ctl name="TX DMIC MUX3" value="DMIC2" />
+    </path>
+
     <path name="speaker">
         <ctl name="RX_CDC_DMA_RX_1 Channels" value="One" />
         <ctl name="RX_MACRO RX2 MUX" value="AIF2_PB" />
@@ -4110,6 +4116,11 @@
     <path name="va-mic-mono-lpi">
         <ctl name="LPI Enable" value="1" />
         <path name="va-mic-mono" />
+    </path>
+
+    <path name="va-mic-dmic-lpi">
+        <ctl name="LPI Enable" value="1" />
+        <path name="va-mic-dmic" />
     </path>
 
     <path name="headset-va-mic">

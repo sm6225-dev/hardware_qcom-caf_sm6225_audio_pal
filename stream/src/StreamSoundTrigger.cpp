@@ -26,37 +26,10 @@
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Changes from Qualcomm Technologies, Inc. are provided under the following license:
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted (subject to the limitations in the
- * disclaimer below) provided that the following conditions are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *
- *   * Redistributions in binary form must reproduce the above
- *     copyright notice, this list of conditions and the following
- *     disclaimer in the documentation and/or other materials provided
- *     with the distribution.
- *
- *   * Neither the name of Qualcomm Innovation Center, Inc. nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- * NO EXPRESS OR IMPLIED LICENSES TO ANY PARTY'S PATENT RIGHTS ARE
- * GRANTED BY THIS LICENSE. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT
- * HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
- * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
- * GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
- * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
- * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #define LOG_TAG "PAL: StreamSoundTrigger"
@@ -77,9 +50,10 @@
 #define PAL_DBG(LOG_TAG,...)  PAL_INFO(LOG_TAG,__VA_ARGS__)
 #endif
 
-#define ST_DEFERRED_STOP_DEALY_MS (1000)
-#define ST_MODEL_TYPE_SHIFT       (16)
-#define ST_MAX_FSTAGE_CONF_LEVEL  (100)
+#define ST_DEFERRED_STOP_DELAY_MS     (1000)
+#define ST_LAB_DEFERRED_STOP_DELAY_MS (10000)
+#define ST_MODEL_TYPE_SHIFT           (16)
+#define ST_MAX_FSTAGE_CONF_LEVEL      (100)
 
 ST_DBG_DECLARE(static int lab_cnt = 0);
 
@@ -126,7 +100,6 @@ StreamSoundTrigger::StreamSoundTrigger(struct pal_stream_attributes *sattr,
     sm_cfg_ = nullptr;
     ec_rx_dev_ = nullptr;
     mDevices.clear();
-    mPalDevice.clear();
 
     // Setting default volume to unity
     mVolumeData = (struct pal_volume_data *)malloc(sizeof(struct pal_volume_data)
@@ -154,10 +127,6 @@ StreamSoundTrigger::StreamSoundTrigger(struct pal_stream_attributes *sattr,
     if (!dattr) {
         PAL_ERR(LOG_TAG,"Error:invalid device arguments");
         throw std::runtime_error("invalid device arguments");
-    }
-
-    for (int i=0; i < no_of_devices; i++) {
-        mPalDevice.push_back(dattr[i]);
     }
 
     mStreamAttr = (struct pal_stream_attributes *)calloc(1,
@@ -384,6 +353,7 @@ int32_t StreamSoundTrigger::read(struct pal_buffer* buf) {
         lab_cnt++;
     }
     if (cur_state_ == st_buffering_ && !this->force_nlpi_vote) {
+        CancelDelayedStop();
         rm->voteSleepMonitor(this, true, true);
         this->force_nlpi_vote = true;
     }
@@ -958,8 +928,14 @@ void StreamSoundTrigger::TimerThread(StreamSoundTrigger& st_stream) {
         if (st_stream.exit_timer_thread_)
             break;
 
-        st_stream.timer_wait_cond_.wait_for(lck,
-            std::chrono::milliseconds(ST_DEFERRED_STOP_DEALY_MS));
+        if (st_stream.GetCurrentStateId() == ST_STATE_BUFFERING &&
+            !st_stream.second_stage_processing_) {
+            st_stream.timer_wait_cond_.wait_for(lck,
+                std::chrono::milliseconds(ST_LAB_DEFERRED_STOP_DELAY_MS));
+        } else {
+            st_stream.timer_wait_cond_.wait_for(lck,
+                std::chrono::milliseconds(ST_DEFERRED_STOP_DELAY_MS));
+        }
 
         if (!st_stream.timer_stop_waiting_ && !st_stream.exit_timer_thread_) {
             st_stream.timer_mutex_.unlock();
@@ -1895,6 +1871,8 @@ int32_t StreamSoundTrigger::notifyClient(bool detection) {
     ChronoSteadyClock_t notify_time;
     uint64_t total_process_duration = 0;
     bool lock_status = false;
+
+    PostDelayedStop();
 
     status = GenerateCallbackEvent(&rec_event, &event_size,
                                                 detection);
@@ -3737,9 +3715,6 @@ int32_t StreamSoundTrigger::StActive::ProcessEvent(
             if (!st_stream_.rec_config_->capture_requested &&
                 st_stream_.engines_.size() == 1) {
                 TransitTo(ST_STATE_DETECTED);
-                if (st_stream_.GetCurrentStateId() == ST_STATE_DETECTED) {
-                    st_stream_.PostDelayedStop();
-                }
             } else {
                 if (st_stream_.engines_.size() > 1)
                     st_stream_.second_stage_processing_ = true;
@@ -4432,9 +4407,6 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
                 if (st_stream_.st_info_->GetNotifySecondStageFailure()) {
                     st_stream_.rejection_notified_ = true;
                     st_stream_.notifyClient(false);
-                    if (!st_stream_.rec_config_->capture_requested &&
-                         st_stream_.GetCurrentStateId() == ST_STATE_BUFFERING)
-                    st_stream_.PostDelayedStop();
                 } else {
                     PAL_DBG(LOG_TAG, "Notification for second stage rejection is disabled");
                     for (auto& eng : st_stream_.engines_) {
@@ -4470,11 +4442,6 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
                     TransitTo(ST_STATE_DETECTED);
                 }
                 st_stream_.notifyClient(true);
-                if (!st_stream_.rec_config_->capture_requested &&
-                    (st_stream_.GetCurrentStateId() == ST_STATE_BUFFERING ||
-                     st_stream_.GetCurrentStateId() == ST_STATE_DETECTED)) {
-                    st_stream_.PostDelayedStop();
-                }
             }
             break;
         }

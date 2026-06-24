@@ -27,7 +27,7 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * Changes from Qualcomm Innovation Center are provided under the following license:
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
@@ -189,6 +189,8 @@ public:
     void payloadDpAudioConfig(uint8_t** payload, size_t* size,
                            uint32_t miid,
                            struct dpAudioConfig *data);
+    void payloadVolumeCtrlRamp(uint8_t** payload, size_t* size,
+         uint32_t miid, uint32_t ramp_period_ms);
     void payloadMFCConfig(uint8_t** payload, size_t* size,
                            uint32_t miid,
                            struct sessionToPayloadParam* data);
@@ -286,7 +288,7 @@ public:
         &filled_selector_pairs, uint32_t type, std::vector<allKVs> &any_type,
         std::vector<std::pair<int32_t, int32_t>> &keyVector);
     static std::string removeSpaces(const std::string& str);
-    static std::vector<std::string> splitStrings(const std::string& str);
+    static std::vector<std::string> splitStrings(const std::string& str, char delimiter);
     static int getBtDeviceKV(int dev_id, std::vector<std::pair<int, int>> &deviceKV,
         uint32_t codecFormat, bool isAbrEnabled, bool isHostless);
     static int getDeviceKV(int dev_id, std::vector<std::pair<int, int>> &deviceKV);

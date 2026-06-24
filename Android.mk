@@ -58,6 +58,10 @@ ifeq ($(strip $(AUDIO_FEATURE_ENABLED_EC_REF_CAPTURE)),true)
 LOCAL_CFLAGS += -DEC_REF_CAPTURE_ENABLED
 endif
 
+ifeq ($(strip $(AUDIO_FEATURE_ENABLED_DYNAMIC_SR)),true)
+LOCAL_CFLAGS += -DDYNAMIC_SR_ENABLED
+endif
+
 LOCAL_C_INCLUDES              += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 LOCAL_C_INCLUDES              += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/techpack/audio/include
 LOCAL_ADDITIONAL_DEPENDENCIES += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
@@ -116,7 +120,8 @@ LOCAL_SRC_FILES := \
     utils/src/ACDPlatformInfo.cpp \
     utils/src/PalRingBuffer.cpp \
     utils/src/SoundTriggerUtils.cpp \
-    utils/src/SignalHandler.cpp
+    utils/src/SignalHandler.cpp \
+    utils/src/MetadataParser.cpp
 ifeq ($(strip $(AUDIO_FEATURE_ENABLED_EC_REF_CAPTURE)),true)
 LOCAL_SRC_FILES += device/src/ECRefDevice.cpp
 endif
@@ -126,7 +131,9 @@ LOCAL_HEADER_LIBRARIES := \
     libcapiv2_headers \
     libagm_headers \
     libacdb_headers \
-    libarpal_headers
+    libarpal_headers \
+    liblisten_headers \
+    libarosal_headers
 
 LOCAL_SHARED_LIBRARIES := \
     libar-gsl\

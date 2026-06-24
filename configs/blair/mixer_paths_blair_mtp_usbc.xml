@@ -25,9 +25,9 @@
 <!-- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN -->
 <!-- IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.                          -->
 
-<!-- Changes from Qualcomm Innovation Center are provided under the following license:    -->
+<!-- Changes from Qualcomm Innovation Center, Inc. are provided under the following license:    -->
 <!--                                                                                      -->
-<!-- Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.             -->
+<!-- Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.             -->
 <!-- SPDX-License-Identifier: BSD-3-Clause-Clear                                          -->
 <mixer>
     <!-- These are the initial mixer settings -->
@@ -2818,16 +2818,17 @@
     <!-- These are actual sound device specific mixer settings -->
     <path name="amic2">
         <ctl name="TX DEC0 MUX" value="SWR_MIC" />
-        <ctl name="TX SMIC MUX0" value="SWR_MIC1" />
-        <ctl name="TX_CDC_DMA_TX_4 Channels" value="One" />
-        <ctl name="TX_AIF2_CAP Mixer DEC0" value="1" />
+        <ctl name="TX SMIC MUX0" value="SWR_MIC5" />
         <ctl name="DEC0_BCS Switch" value="1" />
-        <ctl name="ADC2_MIXER Switch" value="1" />
+        <ctl name="TX_AIF1_CAP Mixer DEC0" value="1" />
         <ctl name="ADC2 MUX" value="INP2" />
-        <ctl name="ADC2 ChMap" value="SWRM_TX1_CH2" />
-        <ctl name="MBHC ChMap" value="SWRM_TX2_CH3" />
-        <ctl name="BCS Channel" value="CH6" />
+        <ctl name="ADC2 ChMap" value="SWRM_TX2_CH2" />
+        <ctl name="MBHC ChMap" value="SWRM_TX1_CH3" />
+        <ctl name="TX1 MODE" value="ADC_LP" />
+        <ctl name="BCS Channel" value="CH2" />
         <ctl name="HDR12 MUX" value="NO_HDR12" />
+        <ctl name="ADC2_MIXER Switch" value="1" />
+        <ctl name="AMIC2_MIXER Switch" value="1" />
     </path>
 
     <path name="dmic1">
@@ -2855,6 +2856,12 @@
         <ctl name="TX_AIF1_CAP Mixer DEC2" value="1" />
         <ctl name="TX DMIC MUX2" value="DMIC3" />
 
+    </path>
+
+    <path name="ultrasound-mic">
+        <ctl name="TX_CDC_DMA_TX_4 Channels" value="One" />
+        <ctl name="TX_AIF2_CAP Mixer DEC3" value="1" />
+        <ctl name="TX DMIC MUX3" value="DMIC2" />
     </path>
 
     <path name="speaker">
@@ -4104,6 +4111,11 @@
     <path name="va-mic-mono-lpi">
         <ctl name="LPI Enable" value="1" />
         <path name="va-mic-mono" />
+    </path>
+
+    <path name="va-mic-dmic-lpi">
+        <ctl name="LPI Enable" value="1" />
+        <path name="va-mic-dmic" />
     </path>
 
     <path name="headset-va-mic">
