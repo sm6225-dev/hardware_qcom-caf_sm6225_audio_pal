@@ -19,8 +19,7 @@ cc_library_shared {
     include_dirs: ["system/media/audio/include"],
 
     header_libs: [
-        "libarosal_headers",
-        "libspf-headers",
+        "libarpal_headers",
     ],
 
     shared_libs: [
@@ -51,8 +50,7 @@ cc_library_shared {
     include_dirs: ["system/media/audio/include"],
 
     header_libs: [
-        "libarosal_headers",
-        "libspf-headers",
+        "libarpal_headers",
     ],
 
     shared_libs: [
@@ -83,8 +81,7 @@ cc_library_shared {
     include_dirs: ["system/media/audio/include"],
 
     header_libs: [
-        "libarosal_headers",
-        "libspf-headers",
+        "libarpal_headers",
     ],
 
     shared_libs: [
